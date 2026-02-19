@@ -401,8 +401,8 @@ def parse_pattern(text):
             instrument = m.group(1).upper()
             rest = m.group(2).rstrip("|")
             bars = rest.split("|")
-            if bars and steps_per_bar is None:
-                steps_per_bar = len(bars[0])
+            if bars:
+                steps_per_bar = max(steps_per_bar or 0, len(bars[0]))
             tracks.append({
                 "instrument": instrument,
                 "steps": "".join(bars),
@@ -415,8 +415,7 @@ def parse_pattern(text):
         if m:
             pattern = m.group(1)
             instrument = m.group(2).upper()
-            if steps_per_bar is None:
-                steps_per_bar = len(pattern)
+            steps_per_bar = max(steps_per_bar or 0, len(pattern))
             tracks.append({
                 "instrument": instrument,
                 "steps": pattern,
@@ -506,9 +505,21 @@ def mix_patterns(patterns, samples):
 # ---------------------------------------------------------------------------
 
 def get_key():
-    """Non-blocking key read. Returns None if no key available."""
+    """Non-blocking key read. Returns None if no key available.
+
+    Arrow keys are returned as 'up', 'down', 'left', 'right'.
+    """
     if select.select([sys.stdin], [], [], 0)[0]:
-        return sys.stdin.read(1)
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            # Escape sequence — read remaining bytes if available
+            if select.select([sys.stdin], [], [], 0.02)[0]:
+                ch2 = sys.stdin.read(1)
+                if ch2 == "[" and select.select([sys.stdin], [], [], 0.02)[0]:
+                    ch3 = sys.stdin.read(1)
+                    return {"A": "up", "B": "down", "C": "right", "D": "left"}.get(ch3)
+            return None
+        return ch
     return None
 
 
@@ -573,10 +584,10 @@ def play_loop(buffers, labels, offsets, active, watch_path=None, reload_fn=None)
                     dur = len(buf[0]) / SR
                     print(f"  > [{n}] {labels[n]} ({dur:.1f}s)")
 
-            # Previous/next pattern: a/d
-            elif key in ("a", "d"):
+            # Previous/next pattern: a/d or left/right arrows
+            elif key in ("a", "d", "left", "right"):
                 n_pat = max(k for k in buffers if k > 0)
-                step = 1 if key == "d" else -1
+                step = 1 if key in ("d", "right") else -1
                 pat_idx[0] = (pat_idx[0] - 1 + step) % n_pat + 1  # wrap 1..n_pat
                 n = pat_idx[0]
                 if cur[0] == 0:
@@ -590,9 +601,9 @@ def play_loop(buffers, labels, offsets, active, watch_path=None, reload_fn=None)
                 dur = len(buffers[n]) / SR
                 print(f"  > [{cur[0]}] {labels[n]} ({dur:.1f}s)")
 
-            # BPM control: w/s
-            elif key in ("w", "s") and reload_fn:
-                bpm_delta[0] += 10 if key == "w" else -10
+            # BPM control: w/s or up/down arrows
+            elif key in ("w", "s", "up", "down") and reload_fn:
+                bpm_delta[0] += 10 if key in ("w", "up") else -10
                 new_b, new_l, new_o = reload_fn(bpm_delta[0])
                 if new_b:
                     sel = swap(new_b, new_l, new_o)
@@ -744,7 +755,7 @@ Step characters:
     active = 1 if n_patterns == 1 else 0
     dur = len(buffers[active]) / SR
     print(f"\nPlaying [{active}] {labels[active]} ({dur:.1f}s)")
-    print(f"Watching {args.input} — 0-{min(n_patterns, 9)} switch, w/s BPM +/-10, Ctrl+C stop")
+    print(f"Watching {args.input} — 0-{min(n_patterns, 9)} switch, \u2190\u2192 prev/next, \u2191\u2193 BPM +/-10, Ctrl+C stop")
 
     old_settings = termios.tcgetattr(sys.stdin)
     try:

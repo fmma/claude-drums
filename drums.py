@@ -527,40 +527,65 @@ def get_key():
 # Output
 # ---------------------------------------------------------------------------
 
-def play_loop(buffers, labels, offsets, active, watch_path=None, reload_fn=None):
-    """Loop audio with pattern selection (0-9), BPM control (w/s), and file watching.
+def play_loop(buffers, labels, offsets, watch_path=None, reload_fn=None):
+    """Loop audio with seek (1-9), single-pattern loop (space), BPM control, file watching.
 
     reload_fn: callable(bpm_delta) -> (buffers, labels, offsets) or (None, None, None)
     """
-    cur = [active]
-    pat_idx = [1]  # focused pattern (1-indexed), used for a/d navigation
+    pat_idx = [1]  # focused pattern (1-indexed)
+    looping = [False]  # True = loop single pattern, False = play all
     bpm_delta = [0]
-    buf = [buffers[active].astype(np.float32)]
+    buf = [buffers[0].astype(np.float32)]
     pos = [0]
 
     def callback(outdata, frames, time_info, status):
         data = buf[0]
         length = len(data)
-        p = pos[0] % length
-        out = outdata[:, 0]
-        remaining = length - p
-        if remaining >= frames:
-            out[:] = data[p:p + frames]
-            pos[0] = p + frames
+        if looping[0]:
+            # Loop within the single-pattern region of the "all" buffer
+            n = pat_idx[0]
+            n_pat = max(k for k in buffers if k > 0)
+            lo = offsets.get(n, 0)
+            hi = offsets.get(n + 1, length) if n < n_pat else length
+            seg_len = hi - lo
+            if seg_len <= 0:
+                seg_len = length
+                lo = 0
+            p = lo + (pos[0] - lo) % seg_len
+            out = outdata[:, 0]
+            remaining = hi - p
+            if remaining >= frames:
+                out[:] = data[p:p + frames]
+                pos[0] = p + frames
+            else:
+                out[:remaining] = data[p:hi]
+                leftover = frames - remaining
+                out[remaining:] = data[lo:lo + leftover]
+                pos[0] = lo + leftover
         else:
-            out[:remaining] = data[p:]
-            out[remaining:] = data[:frames - remaining]
-            pos[0] = frames - remaining
+            p = pos[0] % length
+            out = outdata[:, 0]
+            remaining = length - p
+            if remaining >= frames:
+                out[:] = data[p:p + frames]
+                pos[0] = p + frames
+            else:
+                out[:remaining] = data[p:]
+                out[remaining:] = data[:frames - remaining]
+                pos[0] = frames - remaining
 
     def swap(new_buffers, new_labels, new_offsets):
         buffers.update(new_buffers)
         labels.update(new_labels)
         offsets.update(new_offsets)
-        sel = cur[0] if cur[0] in buffers else 0
-        cur[0] = sel
-        buf[0] = buffers[sel].astype(np.float32)
+        buf[0] = buffers[0].astype(np.float32)
         pos[0] = 0
-        return sel
+
+    def print_status():
+        n = pat_idx[0]
+        mode = "LOOP" if looping[0] else ">>  "
+        dur = len(buffers[n]) / SR
+        print(f"  {mode} [{n}] {labels[n]} ({dur:.1f}s)")
 
     last_mtime = os.path.getmtime(watch_path) if watch_path else None
 
@@ -572,44 +597,40 @@ def play_loop(buffers, labels, offsets, active, watch_path=None, reload_fn=None)
             if not key:
                 pass
 
-            # Pattern selection: 0-9
+            # Toggle single-pattern loop: space
+            elif key == " ":
+                looping[0] = not looping[0]
+                if looping[0]:
+                    # Snap position into the looped region
+                    n = pat_idx[0]
+                    pos[0] = offsets.get(n, 0)
+                print_status()
+
+            # Seek to pattern: 1-9
             elif key.isdigit():
                 n = int(key)
-                if n in buffers:
-                    cur[0] = n
-                    if n > 0:
-                        pat_idx[0] = n
-                    buf[0] = buffers[n].astype(np.float32)
-                    pos[0] = 0
-                    dur = len(buf[0]) / SR
-                    print(f"  > [{n}] {labels[n]} ({dur:.1f}s)")
+                if n > 0 and n in buffers:
+                    pat_idx[0] = n
+                    pos[0] = offsets.get(n, 0)
+                    print_status()
 
-            # Previous/next pattern: a/d or left/right arrows
+            # Previous/next pattern: left/right arrows or a/d
             elif key in ("a", "d", "left", "right"):
                 n_pat = max(k for k in buffers if k > 0)
                 step = 1 if key in ("d", "right") else -1
-                pat_idx[0] = (pat_idx[0] - 1 + step) % n_pat + 1  # wrap 1..n_pat
-                n = pat_idx[0]
-                if cur[0] == 0:
-                    # Seek within the "all" buffer
-                    pos[0] = offsets.get(n, 0)
-                else:
-                    # Switch single-pattern loop
-                    cur[0] = n
-                    buf[0] = buffers[n].astype(np.float32)
-                    pos[0] = 0
-                dur = len(buffers[n]) / SR
-                print(f"  > [{cur[0]}] {labels[n]} ({dur:.1f}s)")
+                pat_idx[0] = (pat_idx[0] - 1 + step) % n_pat + 1
+                pos[0] = offsets.get(pat_idx[0], 0)
+                print_status()
 
             # BPM control: w/s or up/down arrows
             elif key in ("w", "s", "up", "down") and reload_fn:
                 bpm_delta[0] += 10 if key in ("w", "up") else -10
                 new_b, new_l, new_o = reload_fn(bpm_delta[0])
                 if new_b:
-                    sel = swap(new_b, new_l, new_o)
+                    swap(new_b, new_l, new_o)
                     d = bpm_delta[0]
                     tag = f"BPM {d:+d}" if d else "BPM (original)"
-                    print(f"  > {tag} — [{sel}] {labels[sel]}")
+                    print(f"  > {tag}")
 
             # Check for file changes
             if watch_path and reload_fn:
@@ -619,8 +640,8 @@ def play_loop(buffers, labels, offsets, active, watch_path=None, reload_fn=None)
                         last_mtime = mtime
                         new_b, new_l, new_o = reload_fn(bpm_delta[0])
                         if new_b:
-                            sel = swap(new_b, new_l, new_o)
-                            print(f"  Reloaded — [{sel}] {labels[sel]}")
+                            swap(new_b, new_l, new_o)
+                            print(f"  Reloaded")
                 except Exception as e:
                     print(f"  reload error: {e}", file=sys.stderr)
 
@@ -751,16 +772,14 @@ Step characters:
         save_wav(buffers[0], args.save)
         print(f"Saved {args.save}")
 
-    # Start on the single pattern, or all if multiple
-    active = 1 if n_patterns == 1 else 0
-    dur = len(buffers[active]) / SR
-    print(f"\nPlaying [{active}] {labels[active]} ({dur:.1f}s)")
-    print(f"Watching {args.input} — 0-{min(n_patterns, 9)} switch, \u2190\u2192 prev/next, \u2191\u2193 BPM +/-10, Ctrl+C stop")
+    dur = len(buffers[0]) / SR
+    print(f"\nPlaying {labels[0]} ({dur:.1f}s)")
+    print(f"Watching {args.input} — 1-{min(n_patterns, 9)} seek, space loop, \u2190\u2192 prev/next, \u2191\u2193 BPM, Ctrl+C stop")
 
     old_settings = termios.tcgetattr(sys.stdin)
     try:
         tty.setcbreak(sys.stdin.fileno())
-        play_loop(buffers, labels, offsets, active, watch_path=args.input, reload_fn=load_file)
+        play_loop(buffers, labels, offsets, watch_path=args.input, reload_fn=load_file)
     except KeyboardInterrupt:
         sd.stop()
         print()

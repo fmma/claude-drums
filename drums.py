@@ -4,11 +4,11 @@
 import os
 import sys
 import re
+import random
 import tty
 import time
 import wave
 import select
-import struct
 import termios
 import argparse
 import numpy as np
@@ -44,18 +44,6 @@ GM_DRUMS = {
 
 def _t(dur):
     return np.arange(int(SR * dur)) / SR
-
-
-def _hp(signal, cutoff=200):
-    """Simple first-order high-pass filter."""
-    rc = 1.0 / (2.0 * np.pi * cutoff)
-    dt = 1.0 / SR
-    alpha = rc / (rc + dt)
-    out = np.zeros_like(signal)
-    out[0] = signal[0]
-    for i in range(1, len(signal)):
-        out[i] = alpha * (out[i - 1] + signal[i] - signal[i - 1])
-    return out
 
 
 def _bandpass(signal, lo, hi):
@@ -110,6 +98,34 @@ def _snare():
     transient = np.random.randn(len(t)) * np.exp(-t * 55) * 0.6
     out = body1 + body2 + wires + transient
     return np.tanh(out * 1.1) * 0.8
+
+
+def _snare_ghost():
+    """Soft center-of-head hit: more body, less wire, muted attack."""
+    t = _t(0.2)
+    freq1 = 180 * np.exp(-t * 8) + 140
+    body = np.sin(2 * np.pi * np.cumsum(freq1) / SR) * np.exp(-t * 18) * 0.5
+    noise = np.random.randn(len(t))
+    wires = _bandpass(noise, 2000, 6000) * np.exp(-t * 20) * 0.3
+    transient = np.random.randn(len(t)) * np.exp(-t * 80) * 0.2
+    out = body + wires + transient
+    return np.tanh(out) * 0.5
+
+
+def _snare_accent():
+    """Hard snare hit: more body, more wire, stronger transient."""
+    t = _t(0.4)
+    # Drum body: hit harder so more resonance and sustain
+    freq1 = 190 * np.exp(-t * 5) + 145
+    body1 = np.sin(2 * np.pi * np.cumsum(freq1) / SR) * np.exp(-t * 9) * 0.55
+    body2 = np.sin(2 * np.pi * 320 * t) * np.exp(-t * 14) * 0.3
+    # More wire sizzle from harder hit
+    noise = np.random.randn(len(t))
+    wires = _bandpass(noise, 2000, 9000) * np.exp(-t * 8) * 1.5
+    # Harder attack transient
+    transient = np.random.randn(len(t)) * np.exp(-t * 50) * 0.8
+    out = body1 + body2 + wires + transient
+    return np.tanh(out * 1.2) * 0.9
 
 
 def _rimshot():
@@ -262,6 +278,8 @@ def make_samples():
         36: _kick(),
         37: _rimshot(),
         38: _snare(),
+        (38, "ghost"): _snare_ghost(),
+        (38, "accent"): _snare_accent(),
         39: _clap(),
         41: _tom(110, 65, dur=0.6),
         42: _hihat_closed(),
@@ -296,7 +314,15 @@ def load_kit(dir_path):
     for fname in os.listdir(dir_path):
         if not fname.lower().endswith(".wav"):
             continue
-        abbr = os.path.splitext(fname)[0].upper()
+        stem = os.path.splitext(fname)[0].upper()
+        # Support variant samples: SD_GHOST.wav, SD_ACCENT.wav
+        variant = None
+        for suffix in ("_GHOST", "_ACCENT"):
+            if stem.endswith(suffix):
+                variant = suffix[1:].lower()
+                stem = stem[:-len(suffix)]
+                break
+        abbr = stem
         if abbr not in abbrev_to_note:
             continue
 
@@ -339,7 +365,11 @@ def load_kit(dir_path):
                 x_new = np.linspace(0, 1, n_out)
                 data = np.interp(x_new, x_old, data)
 
-            samples[abbrev_to_note[abbr]] = data
+            note = abbrev_to_note[abbr]
+            if variant:
+                samples[(note, variant)] = data
+            else:
+                samples[note] = data
 
         except Exception as e:
             print(f"  Warning: could not load {fname}: {e}", file=sys.stderr)
@@ -353,20 +383,17 @@ def load_kit(dir_path):
 
 def get_velocity(char):
     if char in ("x", "o"):
-        return 100
+        return 90
     if char in ("X", "O"):
-        return 127
+        return 110
     if char in (".", "g"):
-        return 50
+        return 30
     return 0
 
 
-def parse_pattern(text):
+def parse_pattern_block(text):
     lines = text.strip().split("\n")
-    bpm = 120
-    swing = 0
-    repeat = None
-    title = ""
+    name = ""
     tracks = []
     steps_per_bar = None
 
@@ -374,69 +401,272 @@ def parse_pattern(text):
         stripped = line.strip()
         if not stripped:
             continue
+
+        m = re.match(r"^([xoXO.g\-]+)\s+([A-Za-z]\w{1,2})\s*$", stripped)
+        if m:
+            instrument = m.group(2).upper()
+            steps_per_bar = max(steps_per_bar or 0, len(m.group(1)))
+            tracks.append({"instrument": instrument, "steps": m.group(1)})
+            continue
+
+        if not name and re.match(r'^[A-Za-z]\w*$', stripped):
+            name = stripped
+
+    return {"name": name, "tracks": tracks, "steps_per_bar": steps_per_bar or 16}
+
+
+def parse_preamble(text):
+    """Extract title, global BPM, and arrangement lines from preamble text."""
+    title = ""
+    global_bpm = None
+    arrangement = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
         if stripped.startswith("#"):
             title = stripped.lstrip("#").strip()
             continue
+        m = re.match(r"BPM\s+(\d+)", stripped, re.IGNORECASE)
+        if m:
+            global_bpm = int(m.group(1))
+            continue
+        tokens = stripped.split()
+        if all(re.match(r'^[A-Za-z]\w*$', t) for t in tokens):
+            arrangement.append(tokens)
+    return title, global_bpm, arrangement
 
-        m = re.match(r"BPM:\s*(\d+)", stripped, re.IGNORECASE)
-        if m:
-            bpm = int(m.group(1))
-            continue
-        m = re.match(r"Swing:\s*(\d+)", stripped, re.IGNORECASE)
-        if m:
-            swing = int(m.group(1))
-            continue
-        m = re.match(r"Repeat:\s*(\d+)", stripped, re.IGNORECASE)
-        if m:
-            repeat = int(m.group(1))
-            continue
-        m = re.match(r"Title:\s*(.+)", stripped, re.IGNORECASE)
-        if m:
-            title = m.group(1).strip()
+
+def process_block_macros(block_text):
+    """Process macros in a drums block and return (new_text, changed).
+
+    Supported macros:
+      [pat xxx]    - Tile pattern to fill remaining track length
+      [rand N]     - Random hits with probability 1/N
+      [init N]     - Insert N dashes (initialize empty track)
+      [linear A B] - Distribute random hits across instruments (one line)
+      [zoom N]     - Stretch all tracks by inserting N dashes after each step
+      [norm]       - Normalize: shrink to shortest grid, sort by pitch
+    """
+    lines = block_text.split("\n")
+
+    # Regex patterns for each macro and for track lines
+    TRACK_RE = re.compile(r'^([xoXO.g\-]+)\s+([A-Za-z]\w{1,2})\s*$')
+    PAT_RE = re.compile(r'\[pat\s+([xoXO.g\-]+)\]', re.IGNORECASE)
+    RAND_RE = re.compile(r'\[rand\s+(\d+)\]', re.IGNORECASE)
+    LINEAR_RE = re.compile(r'^\[linear\s+((?:[A-Za-z]\w{1,2}\s+)*[A-Za-z]\w{1,2})\]\s*$', re.IGNORECASE)
+    INIT_RE = re.compile(r'\[init\s+(\d+)\]', re.IGNORECASE)
+    ZOOM_RE = re.compile(r'\[zoom(?:\s+(\d+))?\]', re.IGNORECASE)
+    NORM_RE = re.compile(r'\[norm\]', re.IGNORECASE)
+
+    # --- First pass: detect which macros are present ---
+    zoom_factor = None
+    has_norm = False
+    has_macro = False
+
+    for line in lines:
+        stripped = line.strip()
+        if PAT_RE.search(stripped) or RAND_RE.search(stripped) or INIT_RE.search(stripped):
+            has_macro = True
+        if LINEAR_RE.match(stripped):
+            has_macro = True
+        zm = ZOOM_RE.search(stripped)
+        if zm:
+            has_macro = True
+            zoom_factor = int(zm.group(1) or 1)
+        if NORM_RE.search(stripped):
+            has_macro = True
+            has_norm = True
+
+    if not has_macro:
+        return (block_text, False)
+
+    # --- Compute max track length (used by PAT and RAND to fill remaining space) ---
+    max_len = 0
+    for line in lines:
+        tm = TRACK_RE.match(line.strip())
+        if tm:
+            max_len = max(max_len, len(tm.group(1)))
+
+    # --- Second pass: expand inline macros line by line ---
+    target_len = max_len or 16
+
+    def expand_pat(m):
+        """Tile the pattern to fill from the macro's position to target_len."""
+        pat = m.group(1)
+        length = max(target_len - m.start(), 0)
+        if not length:
+            return ''
+        return (pat * ((length // len(pat)) + 1))[:length]
+
+    def expand_rand(m):
+        """Generate random hits with probability 1/N."""
+        n = int(m.group(1))
+        length = max(target_len - m.start(), 0)
+        if not length:
+            return ''
+        return ''.join('o' if random.random() < 1.0 / n else '-' for _ in range(length))
+
+    result = []
+    for line in lines:
+        stripped = line.strip()
+
+        # LINEAR is a block-level macro: one line becomes multiple track lines
+        lm = LINEAR_RE.match(stripped)
+        if lm:
+            instruments = lm.group(1).split()
+            choices = [random.choice(instruments) for _ in range(target_len)]
+            for inst in instruments:
+                steps = ''.join('o' if choices[i] == inst else '-' for i in range(target_len))
+                result.append(f"{steps} {inst}")
             continue
 
-        # Old format: INST |pattern|
-        m = re.match(r"([A-Za-z]\w{1,2})\s*\|(.+)", stripped)
-        if m:
-            instrument = m.group(1).upper()
-            rest = m.group(2).rstrip("|")
-            bars = rest.split("|")
-            if bars:
-                steps_per_bar = max(steps_per_bar or 0, len(bars[0]))
-            tracks.append({
-                "instrument": instrument,
-                "steps": "".join(bars),
-                "num_bars": len(bars),
-            })
-            continue
+        # Strip tag-only macros, expand generative macros
+        line = ZOOM_RE.sub('', line)
+        line = NORM_RE.sub('', line)
+        line = INIT_RE.sub(lambda m: '-' * int(m.group(1)), line)
+        line = PAT_RE.sub(expand_pat, line)
+        line = RAND_RE.sub(expand_rand, line)
+        result.append(line)
 
-        # New format: pattern INST (label at end, no pipes)
-        m = re.match(r"^([xoXO.g\-]+)\s+([A-Za-z]\w{1,2})\s*$", stripped)
-        if m:
-            pattern = m.group(1)
-            instrument = m.group(2).upper()
-            steps_per_bar = max(steps_per_bar or 0, len(pattern))
-            tracks.append({
-                "instrument": instrument,
-                "steps": pattern,
-                "num_bars": 1,
-            })
+    # --- Post-processing: ZOOM and NORM transform entire tracks ---
+    if zoom_factor is not None or has_norm:
+        # Collect track lines with their positions in the result
+        track_entries = []
+        for i, line in enumerate(result):
+            tm = TRACK_RE.match(line.strip())
+            if tm:
+                track_entries.append((i, tm.group(1), tm.group(2)))
+
+        if track_entries:
+            tracks = [(steps, inst) for _, steps, inst in track_entries]
+
+            # ZOOM: insert dashes after each step character
+            if zoom_factor is not None:
+                tracks = [(''.join(ch + '-' * zoom_factor for ch in steps), inst)
+                          for steps, inst in tracks]
+
+            # NORM: pad to equal length, shrink common empty positions, sort by pitch
+            if has_norm:
+                tracks = _normalize_tracks(tracks)
+
+            # Write transformed tracks back into result lines
+            if has_norm:
+                # NORM reorders tracks, so gather them at the first track position
+                first_pos = track_entries[0][0]
+                for j in range(len(track_entries) - 1, -1, -1):
+                    del result[track_entries[j][0]]
+                for j, (steps, inst) in enumerate(tracks):
+                    result.insert(first_pos + j, f"{steps} {inst}")
+            else:
+                for j, (idx, _, _) in enumerate(track_entries):
+                    result[idx] = f"{tracks[j][0]} {tracks[j][1]}"
+
+    return ('\n'.join(result), True)
+
+
+def _normalize_tracks(tracks):
+    """Pad tracks to equal length, remove common empty grid positions, sort by pitch.
+
+    This is the NORM post-processing step. It finds the smallest factor p such
+    that all non-zero positions in every track fall on multiples of p, then keeps
+    only those positions (shrinking the grid). Repeats until no further shrinking
+    is possible.
+    """
+    # Pad all tracks to the same length
+    max_len = max(len(steps) for steps, _ in tracks)
+    tracks = [(steps.ljust(max_len, '-'), inst) for steps, inst in tracks]
+
+    # Iteratively try to shrink by factor p (smallest first)
+    n = len(tracks[0][0])
+    p = 2
+    while p <= n:
+        if n % p == 0:
+            # Check if all hits land on positions divisible by p
+            can_shrink = all(
+                steps[i] == '-'
+                for steps, _ in tracks
+                for i in range(n) if i % p != 0
+            )
+            if can_shrink:
+                tracks = [(''.join(steps[i] for i in range(0, n, p)), inst)
+                          for steps, inst in tracks]
+                n = len(tracks[0][0])
+                # Restart: a new smaller factor may apply after shrinking
+            else:
+                p += 1
+        else:
+            p += 1
+
+    # Sort high-pitched instruments first (descending MIDI note)
+    tracks.sort(key=lambda t: GM_DRUMS.get(t[1].upper(), 0), reverse=True)
+    return tracks
+
+
+def apply_macros(text, filepath):
+    """Expand macros in all ```drums blocks and write the result back to file.
+
+    Returns the updated text. A global [norm] outside any drums block is
+    injected into every block before processing.
+    """
+    changed = False
+    parts = re.split(r'(```drums\s*\n.*?```)', text, flags=re.DOTALL)
+
+    # Detect and remove global [norm] directives (outside drums blocks)
+    global_norm = False
+    for i in range(0, len(parts), 2):
+        if re.search(r'^\[norm\]\s*$', parts[i], re.MULTILINE | re.IGNORECASE):
+            global_norm = True
+            parts[i] = re.sub(r'^\[norm\]\s*\n?', '', parts[i], flags=re.MULTILINE | re.IGNORECASE)
+            changed = True
+
+    # Process each drums block
+    for i in range(1, len(parts), 2):
+        m = re.match(r'```drums\s*\n(.*?)```', parts[i], re.DOTALL)
+        if not m:
+            continue
+        body = m.group(1)
+        if global_norm:
+            body = '[norm]\n' + body
+        new_body, block_changed = process_block_macros(body)
+        if block_changed:
+            changed = True
+            parts[i] = f"```drums\n{new_body}```"
+
+    new_text = ''.join(parts)
+    if changed:
+        with open(filepath, 'w') as f:
+            f.write(new_text)
+    return new_text
+
+
+def parse_file(text):
+    """Parse a complete file with preamble arrangement and drums blocks."""
+    preamble_split = re.split(r'```drums\s*\n', text, maxsplit=1)
+    preamble_text = preamble_split[0] if len(preamble_split) > 1 else ""
+    title, global_bpm, arrangement = parse_preamble(preamble_text)
+
+    blocks = re.findall(r"```drums\s*\n(.*?)```", text, re.DOTALL)
+    bpm = global_bpm or 120
+    parsed = [parse_pattern_block(b) for b in blocks]
+
+    patterns = {}
+    for i, p in enumerate(parsed):
+        name = (p["name"] or f"PATTERN {i + 1}").upper()
+        p["name"] = name
+        p["bpm"] = bpm
+        patterns[name] = p
+
+    arrangement = [[t.upper() for t in line] for line in arrangement]
+    if not arrangement:
+        arrangement = [[name] for name in patterns]
 
     return {
         "title": title,
         "bpm": bpm,
-        "swing": swing,
-        "repeat": repeat,
-        "tracks": tracks,
-        "steps_per_bar": steps_per_bar or 16,
+        "arrangement": arrangement,
+        "patterns": patterns,
     }
-
-
-def extract_patterns(text):
-    blocks = re.findall(r"```drums\s*\n(.*?)```", text, re.DOTALL)
-    if blocks:
-        return [parse_pattern(b) for b in blocks]
-    return [parse_pattern(text)]
 
 
 # ---------------------------------------------------------------------------
@@ -450,8 +680,7 @@ def mix_patterns(patterns, samples):
         spb = p["steps_per_bar"]
         step_s = (60.0 / p["bpm"]) * (4.0 / spb)
         max_steps = max((len(t["steps"]) for t in p["tracks"]), default=0)
-        reps = p["repeat"] or 1
-        total_secs += max_steps * step_s * reps
+        total_secs += max_steps * step_s
 
     audio = np.zeros(int(SR * total_secs))
     time_offset = 0.0
@@ -459,41 +688,42 @@ def mix_patterns(patterns, samples):
     for p in patterns:
         spb = p["steps_per_bar"]
         step_s = (60.0 / p["bpm"]) * (4.0 / spb)
-        swing_pct = p["swing"] / 100.0
         max_steps = max((len(t["steps"]) for t in p["tracks"]), default=0)
         pat_dur = max_steps * step_s
-        reps = p["repeat"] or 1
 
-        for _ in range(reps):
-            for t in p["tracks"]:
-                inst = t["instrument"]
-                if inst not in GM_DRUMS:
-                    print(f"Warning: unknown instrument '{inst}'", file=sys.stderr)
-                    continue
-                note = GM_DRUMS[inst]
-                if note not in samples:
-                    continue
-                sample = samples[note]
+        for t in p["tracks"]:
+            inst = t["instrument"]
+            if inst not in GM_DRUMS:
+                print(f"Warning: unknown instrument '{inst}'", file=sys.stderr)
+                continue
+            note = GM_DRUMS[inst]
+            if note not in samples:
+                continue
+            sample = samples[note]
 
-                for i, char in enumerate(t["steps"]):
-                    vel = get_velocity(char)
-                    if vel > 0:
-                        t_sec = time_offset + i * step_s
-                        if swing_pct > 0 and i % 2 == 1:
-                            t_sec += swing_pct * step_s
-                        start = int(t_sec * SR)
-                        gain = vel / 127.0
-                        end = start + len(sample)
-                        if end <= len(audio):
-                            audio[start:end] += sample * gain
-                        else:
-                            # Wrap tail into the buffer (truncate if sample > buffer)
-                            fit = len(audio) - start
-                            audio[start:] += sample[:fit] * gain
-                            overflow = min(len(sample) - fit, len(audio))
-                            audio[:overflow] += sample[fit:fit + overflow] * gain
+            for i, char in enumerate(t["steps"]):
+                vel = get_velocity(char)
+                if vel > 0:
+                    # Use variant sample for ghost/accent if available
+                    if char in (".", "g") and (note, "ghost") in samples:
+                        smp = samples[(note, "ghost")]
+                    elif char in ("X", "O") and (note, "accent") in samples:
+                        smp = samples[(note, "accent")]
+                    else:
+                        smp = sample
+                    t_sec = time_offset + i * step_s
+                    start = int(t_sec * SR)
+                    gain = vel / 127.0
+                    end = start + len(smp)
+                    if end <= len(audio):
+                        audio[start:end] += smp * gain
+                    else:
+                        fit = len(audio) - start
+                        audio[start:] += smp[:fit] * gain
+                        overflow = min(len(smp) - fit, len(audio))
+                        audio[:overflow] += smp[fit:fit + overflow] * gain
 
-            time_offset += pat_dur
+        time_offset += pat_dur
 
     # Soft-clip and normalize
     audio = np.tanh(audio * 1.5) * 0.85
@@ -527,123 +757,163 @@ def get_key():
 # Output
 # ---------------------------------------------------------------------------
 
-def play_loop(buffers, labels, offsets, watch_path=None, reload_fn=None):
-    """Loop audio with seek (1-9), single-pattern loop (space), BPM control, file watching.
-
-    reload_fn: callable(bpm_delta) -> (buffers, labels, offsets) or (None, None, None)
-    """
-    pat_idx = [1]  # focused pattern (1-indexed)
-    looping = [False]  # True = loop single pattern, False = play all
+def play_loop(song, watch_path=None, reload_fn=None, kit_names=None, switch_kit_fn=None, start_kit_idx=0):
+    """Arrangement-based playback with SONG/LINE/PAT modes."""
+    MODES = ["SONG", "LINE", "PAT"]
+    mode = [0]
+    line_idx = [0]
+    pat_idx = [0]
+    paused = [False]
     bpm_delta = [0]
-    buf = [buffers[0].astype(np.float32)]
     pos = [0]
+    pat_names = [song["pattern_names"][:]]
+    kit_list = kit_names or []
+    kit_idx = [start_kit_idx % len(kit_list)] if kit_list else [0]
+
+    def get_active_buf():
+        m = MODES[mode[0]]
+        if m == "SONG":
+            return song["arrangement_buffer"]
+        elif m == "LINE":
+            idx = min(line_idx[0], len(song["line_buffers"]) - 1)
+            return song["line_buffers"][idx]
+        else:
+            idx = min(pat_idx[0], len(pat_names[0]) - 1)
+            return song["pattern_buffers"][pat_names[0][idx]]
+
+    active_buf = [get_active_buf().astype(np.float32)]
+
+    def switch_buf():
+        active_buf[0] = get_active_buf().astype(np.float32)
+        if MODES[mode[0]] == "SONG":
+            offsets = song["line_offsets"]
+            idx = min(line_idx[0], len(offsets) - 2)
+            pos[0] = offsets[idx]
+        else:
+            pos[0] = 0
 
     def callback(outdata, frames, time_info, status):
-        data = buf[0]
+        if paused[0]:
+            outdata[:] = 0
+            return
+        data = active_buf[0]
         length = len(data)
-        if looping[0]:
-            # Loop within the single-pattern region of the "all" buffer
-            n = pat_idx[0]
-            n_pat = max(k for k in buffers if k > 0)
-            lo = offsets.get(n, 0)
-            hi = offsets.get(n + 1, length) if n < n_pat else length
-            seg_len = hi - lo
-            if seg_len <= 0:
-                seg_len = length
-                lo = 0
-            p = lo + (pos[0] - lo) % seg_len
-            out = outdata[:, 0]
-            remaining = hi - p
-            if remaining >= frames:
-                out[:] = data[p:p + frames]
-                pos[0] = p + frames
-            else:
-                out[:remaining] = data[p:hi]
-                leftover = frames - remaining
-                out[remaining:] = data[lo:lo + leftover]
-                pos[0] = lo + leftover
+        if length == 0:
+            outdata[:] = 0
+            return
+        p = pos[0] % length
+        out = outdata[:, 0]
+        remaining = length - p
+        if remaining >= frames:
+            out[:] = data[p:p + frames]
+            pos[0] = p + frames
         else:
-            p = pos[0] % length
-            out = outdata[:, 0]
-            remaining = length - p
-            if remaining >= frames:
-                out[:] = data[p:p + frames]
-                pos[0] = p + frames
-            else:
-                out[:remaining] = data[p:]
-                out[remaining:] = data[:frames - remaining]
-                pos[0] = frames - remaining
+            out[:remaining] = data[p:]
+            out[remaining:] = data[:frames - remaining]
+            pos[0] = frames - remaining
 
-    def swap(new_buffers, new_labels, new_offsets):
-        buffers.update(new_buffers)
-        labels.update(new_labels)
-        offsets.update(new_offsets)
-        buf[0] = buffers[0].astype(np.float32)
-        pos[0] = 0
+    def current_line_from_pos():
+        offsets = song["line_offsets"]
+        p = pos[0]
+        for i in range(len(offsets) - 1):
+            if p < offsets[i + 1]:
+                return i
+        return max(0, len(offsets) - 2)
+
+    def format_status():
+        m = MODES[mode[0]]
+        arr = song["arrangement"]
+        n_lines = len(arr)
+        pause_str = " [PAUSED]" if paused[0] else ""
+        kit_str = f" [{kit_list[kit_idx[0]]}]" if kit_list else ""
+        if m in ("SONG", "LINE"):
+            li = min(line_idx[0], n_lines - 1)
+            tokens = " ".join(arr[li])
+            return f"\r\x1b[2K  {m:4s} {song['bpm']}bpm{kit_str} | Line {li+1}/{n_lines}: {tokens}{pause_str}"
+        else:
+            names = pat_names[0]
+            idx = min(pat_idx[0], len(names) - 1)
+            return f"\r\x1b[2K  {m:4s} {song['bpm']}bpm{kit_str} | {names[idx]} ({idx+1}/{len(names)}){pause_str}"
 
     def print_status():
-        n = pat_idx[0]
-        mode = "LOOP" if looping[0] else ">>  "
-        dur = len(buffers[n]) / SR
-        print(f"  {mode} [{n}] {labels[n]} ({dur:.1f}s)")
+        print(format_status(), end="", flush=True)
+
+    def do_reload(new_song):
+        song.update(new_song)
+        pat_names[0] = song["pattern_names"][:]
+        line_idx[0] = min(line_idx[0], len(song["arrangement"]) - 1)
+        pat_idx[0] = min(pat_idx[0], len(pat_names[0]) - 1)
+        switch_buf()
 
     last_mtime = os.path.getmtime(watch_path) if watch_path else None
+    prev_line = [-1]
+    print_status()
 
     with sd.OutputStream(samplerate=SR, channels=1, callback=callback):
         while True:
             time.sleep(0.05)
 
+            # Track current line in SONG mode
+            if MODES[mode[0]] == "SONG" and not paused[0]:
+                cl = current_line_from_pos()
+                if cl != prev_line[0]:
+                    prev_line[0] = cl
+                    line_idx[0] = cl
+                    print_status()
+
             key = get_key()
             if not key:
                 pass
 
-            # Toggle single-pattern loop: space
             elif key == " ":
-                looping[0] = not looping[0]
-                if looping[0]:
-                    # Snap position into the looped region
-                    n = pat_idx[0]
-                    pos[0] = offsets.get(n, 0)
+                paused[0] = not paused[0]
                 print_status()
 
-            # Seek to pattern: 1-9
-            elif key.isdigit():
-                n = int(key)
-                if n > 0 and n in buffers:
-                    pat_idx[0] = n
-                    pos[0] = offsets.get(n, 0)
-                    print_status()
+            elif key == "m":
+                mode[0] = (mode[0] + 1) % len(MODES)
+                switch_buf()
+                prev_line[0] = -1
+                print_status()
 
-            # Previous/next pattern: left/right arrows or a/d
             elif key in ("a", "d", "left", "right"):
-                n_pat = max(k for k in buffers if k > 0)
                 step = 1 if key in ("d", "right") else -1
-                pat_idx[0] = (pat_idx[0] - 1 + step) % n_pat + 1
-                pos[0] = offsets.get(pat_idx[0], 0)
+                m = MODES[mode[0]]
+                if m in ("SONG", "LINE"):
+                    n = len(song["arrangement"])
+                    line_idx[0] = (line_idx[0] + step) % n
+                    prev_line[0] = line_idx[0]
+                else:
+                    n = len(pat_names[0])
+                    pat_idx[0] = (pat_idx[0] + step) % n
+                switch_buf()
                 print_status()
 
-            # BPM control: w/s or up/down arrows
             elif key in ("w", "s", "up", "down") and reload_fn:
                 bpm_delta[0] += 10 if key in ("w", "up") else -10
-                new_b, new_l, new_o = reload_fn(bpm_delta[0])
-                if new_b:
-                    swap(new_b, new_l, new_o)
-                    d = bpm_delta[0]
-                    tag = f"BPM {d:+d}" if d else "BPM (original)"
-                    print(f"  > {tag}")
+                new_song = reload_fn(bpm_delta[0])
+                if new_song:
+                    do_reload(new_song)
+                    print_status()
 
-            # Check for file changes
+            elif key == "k" and kit_list and switch_kit_fn:
+                kit_idx[0] = (kit_idx[0] + 1) % len(kit_list)
+                new_song = switch_kit_fn(kit_list[kit_idx[0]], bpm_delta[0])
+                if new_song:
+                    do_reload(new_song)
+                    print_status()
+
+            # File watching
             if watch_path and reload_fn:
                 try:
                     mtime = os.path.getmtime(watch_path)
                     if mtime != last_mtime:
                         last_mtime = mtime
-                        new_b, new_l, new_o = reload_fn(bpm_delta[0])
-                        if new_b:
-                            swap(new_b, new_l, new_o)
-                            print(f"  Reloaded")
+                        new_song = reload_fn(bpm_delta[0])
+                        if new_song:
+                            do_reload(new_song)
+                            print_status()
                 except Exception as e:
-                    print(f"  reload error: {e}", file=sys.stderr)
+                    print(f"\r  reload error: {e}", file=sys.stderr)
 
 
 def save_wav(audio, path):
@@ -668,34 +938,50 @@ def list_instruments():
         print(f"  {'/'.join(seen[note]):>8s}  (MIDI {note})")
 
 
-def build_buffers(patterns, samples):
-    """Build per-pattern and combined audio buffers.
+def build_buffers(file_data, samples):
+    """Build audio buffers for arrangement-based playback."""
+    patterns = file_data["patterns"]
+    arrangement = file_data["arrangement"]
 
-    Returns (buffers, labels, offsets) where offsets maps pattern key (1..N)
-    to its start sample in the combined "all" buffer.
-    """
-    buffers = {}
-    labels = {}
-    offsets = {}
+    # Per-pattern audio
+    pattern_buffers = {}
+    for name, p in patterns.items():
+        pattern_buffers[name] = mix_patterns([p], samples)
 
-    # Individual patterns: keys 1..N
-    sample_pos = 0
-    for i, p in enumerate(patterns[:9]):
-        audio = mix_patterns([p], samples)
-        key = i + 1
-        buffers[key] = audio
-        offsets[key] = sample_pos
-        sample_pos += len(audio)
-        title = p["title"] or f"Pattern {key}"
-        reps = p["repeat"] or 1
-        bpm_str = f"{p['bpm']} BPM"
-        labels[key] = f"{title} — {bpm_str}" + (f", {reps}x" if reps > 1 else "")
+    # Per-line audio (concatenation of referenced patterns)
+    line_buffers = []
+    for line_tokens in arrangement:
+        parts = []
+        for token in line_tokens:
+            if token in pattern_buffers:
+                parts.append(pattern_buffers[token])
+            else:
+                print(f"Warning: pattern '{token}' not found", file=sys.stderr)
+        if parts:
+            line_buffers.append(np.concatenate(parts))
+        else:
+            line_buffers.append(np.zeros(SR))
 
-    # Combined: key 0
-    buffers[0] = mix_patterns(patterns, samples)
-    labels[0] = f"All ({len(patterns)} patterns)"
+    # Arrangement buffer and line offsets
+    line_offsets = []
+    pos = 0
+    for buf in line_buffers:
+        line_offsets.append(pos)
+        pos += len(buf)
+    line_offsets.append(pos)  # sentinel
 
-    return buffers, labels, offsets
+    arrangement_buffer = np.concatenate(line_buffers) if line_buffers else np.zeros(SR)
+
+    return {
+        "title": file_data["title"],
+        "bpm": file_data["bpm"],
+        "arrangement": arrangement,
+        "pattern_names": list(patterns.keys()),
+        "pattern_buffers": pattern_buffers,
+        "line_buffers": line_buffers,
+        "arrangement_buffer": arrangement_buffer,
+        "line_offsets": line_offsets,
+    }
 
 
 def main():
@@ -705,8 +991,7 @@ def main():
         epilog="""\
 Pattern format (in ```drums code blocks or plain text):
 
-  BPM: 120
-  Title: My Beat
+  BPM 120
 
   x-x-x-x-x-x-x-x- HH
   ----o-------o---   SD
@@ -732,54 +1017,90 @@ Step characters:
         ap.print_help()
         sys.exit(1)
 
+    # Discover available kits
+    kits_dir = os.path.join(os.path.dirname(__file__), "kits")
+    kit_names = ["synth"]
+    if os.path.isdir(kits_dir):
+        kit_names += sorted(d for d in os.listdir(kits_dir)
+                            if os.path.isdir(os.path.join(kits_dir, d)))
+
+    kit_cache = {}
+
+    def get_samples(kit_name):
+        if kit_name not in kit_cache:
+            if kit_name == "synth":
+                kit_cache[kit_name] = make_samples()
+            else:
+                kit_cache[kit_name] = load_kit(os.path.join(kits_dir, kit_name))
+        return kit_cache[kit_name]
+
     if args.synth:
-        samples = make_samples()
-    else:
-        kit_dir = args.kit or os.path.join(os.path.dirname(__file__), "kits", "acoustic")
+        current_kit = "synth"
+    elif args.kit:
+        kit_dir = args.kit
         if os.path.isdir(kit_dir):
-            samples = load_kit(kit_dir)
+            current_kit = os.path.basename(kit_dir)
+            kit_cache[current_kit] = load_kit(kit_dir)
+            if current_kit not in kit_names:
+                kit_names.append(current_kit)
         else:
-            if args.kit:
-                print(f"Kit directory not found: {kit_dir}", file=sys.stderr)
-                sys.exit(1)
-            samples = make_samples()
+            print(f"Kit directory not found: {kit_dir}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        current_kit = "acoustic" if "acoustic" in kit_names else kit_names[0]
+
+    samples = get_samples(current_kit)
+    kit_start_idx = kit_names.index(current_kit) if current_kit in kit_names else 0
 
     def load_file(bpm_delta=0):
         with open(args.input) as f:
             text = f.read()
-        patterns = extract_patterns(text)
-        if not patterns or all(not p["tracks"] for p in patterns):
-            return None, None, None
-        for p in patterns:
+        text = apply_macros(text, args.input)
+        file_data = parse_file(text)
+        if not file_data["patterns"] or all(
+            not p["tracks"] for p in file_data["patterns"].values()
+        ):
+            return None
+        for p in file_data["patterns"].values():
             p["bpm"] = max(20, p["bpm"] + bpm_delta)
-        return build_buffers(patterns, samples)
+        file_data["bpm"] = max(20, file_data["bpm"] + bpm_delta)
+        return build_buffers(file_data, samples)
 
-    buffers, labels, offsets = load_file()
-    if buffers is None:
+    def switch_kit(kit_name, bpm_delta=0):
+        nonlocal samples
+        samples = get_samples(kit_name)
+        return load_file(bpm_delta)
+
+    song = load_file()
+    if song is None:
         print("No drum patterns found.", file=sys.stderr)
         sys.exit(1)
 
-    # Print pattern list
-    n_patterns = len(buffers) - 1  # exclude key 0
-    for key in range(1, n_patterns + 1):
-        dur = len(buffers[key]) / SR
-        print(f"  [{key}] {labels[key]} ({dur:.1f}s)")
-    if n_patterns > 1:
-        dur = len(buffers[0]) / SR
-        print(f"  [0] {labels[0]} ({dur:.1f}s)")
+    if song["title"]:
+        print(f"  {song['title']}")
+    print(f"  BPM {song['bpm']}  Kit: {current_kit}")
+    print(f"  Kits: {', '.join(kit_names)}")
+    print()
+    for i, line_tokens in enumerate(song["arrangement"]):
+        dur = len(song["line_buffers"][i]) / SR
+        print(f"  {i+1:2d}. {' '.join(line_tokens)} ({dur:.1f}s)")
+    print()
+    print(f"  Patterns: {', '.join(song['pattern_names'])}")
 
     if args.save:
-        save_wav(buffers[0], args.save)
-        print(f"Saved {args.save}")
+        save_wav(song["arrangement_buffer"], args.save)
+        print(f"  Saved {args.save}")
 
-    dur = len(buffers[0]) / SR
-    print(f"\nPlaying {labels[0]} ({dur:.1f}s)")
-    print(f"Watching {args.input} — 1-{min(n_patterns, 9)} seek, space loop, \u2190\u2192 prev/next, \u2191\u2193 BPM, Ctrl+C stop")
+    dur = len(song["arrangement_buffer"]) / SR
+    print(f"\n  Playing ({dur:.1f}s total)")
+    print(f"  space pause, m mode, arrows navigate, up/down BPM, k kit, Ctrl+C stop")
 
     old_settings = termios.tcgetattr(sys.stdin)
     try:
         tty.setcbreak(sys.stdin.fileno())
-        play_loop(buffers, labels, offsets, watch_path=args.input, reload_fn=load_file)
+        play_loop(song, watch_path=args.input, reload_fn=load_file,
+                  kit_names=kit_names, switch_kit_fn=switch_kit,
+                  start_kit_idx=kit_start_idx)
     except KeyboardInterrupt:
         sd.stop()
         print()

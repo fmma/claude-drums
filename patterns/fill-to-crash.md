@@ -1,7 +1,11 @@
 # Fill into Crash
 
+BPM 120
+
+Fill Crash
+
 ```drums
-BPM: 120
+Fill
 
 x-x-x-x--------- HH
 ----o---o-o-o-o- SD
@@ -12,7 +16,7 @@ o---o----------- BD
 ```
 
 ```drums
-BPM: 120
+Crash
 
 o--------------- CR
 --x-x-x-x-x-x-x- HH

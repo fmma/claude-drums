@@ -1,32 +1,20 @@
 # Smells Like Teen Spirit (Nirvana)
 
-```drums
-BPM: 117
-Repeat: 2
-Title: Verse
+BPM 117
 
-x-x-x-x-x-x-x-x- HH
-----o-------o--- SD
-o-------o------- BD
-```
+Chorus Chorus Chorus Chorus End
 
 ```drums
-BPM: 117
-Repeat: 1
-Title: Fill
-
-o---o---o---o--- CR
-o---o---o---o--- SD
-o---o---o---o--- BD
-```
-
-```drums
-BPM: 117
-Repeat: 4
-Title: Chorus
+Chorus
 
 o--------------- CR
-x-x-x-x-x-x-x-x- HH
-----o-------o--- SD
-o--o----o-o----- BD
+x---x---x---x--- HH
+----o--o-o--o--- SD
+o--o----o-oo--o- BD
+```
+
+```drums
+End
+
+o CR
 ```

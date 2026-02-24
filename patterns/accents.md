@@ -1,3 +1,4 @@
 ```drums
-ooggooXX--oggggoXgggg SD
+
+xxggxxaa--xggggxagggg--- SD
 ```

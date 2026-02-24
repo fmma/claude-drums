@@ -2,19 +2,28 @@
 
 BPM 117
 
-Chorus Chorus Chorus Chorus End
+Intro Chorus Chorus Chorus Chorus End
+
+```drums
+Intro
+
+--x---x---x----- HH
+f---f---f---f--- SD
+-x-x-x-x-x-x--x- BD
+
+```
 
 ```drums
 Chorus
 
-o--------------- CR
+x--------------- CR
 x---x---x---x--- HH
-----o--o-o--o--- SD
-o--o----o-oo--o- BD
+----x--x-x--x--- SD
+x--x----x-xx--x- BD
 ```
 
 ```drums
 End
 
-o CR
+x CR
 ```

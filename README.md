@@ -19,6 +19,7 @@ python drums.py patterns/basic-rock.md --kit kits/acoustic
 python drums.py patterns/basic-rock.md --kit kits/drumthrash
 python drums.py patterns/four-on-the-floor.md --kit kits/tr-909
 python drums.py patterns/hip-hop.md --kit kits/tr-808
+python drums.py patterns/                                    # directory mode
 python drums.py --list
 ```
 
@@ -128,7 +129,7 @@ Variant samples (`_ghost.wav`, `_accent.wav`) override the sound for ghost notes
 
 ## Pattern Format
 
-A file has an optional preamble (title, BPM, arrangement) followed by named drums blocks:
+A file has an optional preamble (title, BPM, beats, arrangement) followed by named drums blocks:
 
 ```markdown
 # Song Title
@@ -142,17 +143,17 @@ Verse Verse Chorus Fill
 Verse
 
 x-x-x-x-x-x-x-x- HH
-----o-------o--- SD
-o-------o-o----- BD
+----x-------x--- SD
+x-------x-x----- BD
 ```​
 
 ```drums
 Chorus
 
-o--------------- CR
+x--------------- CR
 x-x-x-x-x-x-x-x- HH
-----o-------o--- SD
-o---o---o---o--- BD
+----x-------x--- SD
+x---x---x---x--- BD
 ```​
 ```
 
@@ -160,12 +161,15 @@ If no arrangement is given, patterns play in file order. If no BPM is given, def
 
 ### Step characters
 
-| Char    | Meaning      | Velocity |
-|---------|--------------|----------|
-| `x` `o` | Normal hit  | 90       |
-| `X` `O` | Accent      | 110      |
-| `.` `g` | Ghost note  | 30       |
-| `-`     | Rest         | —        |
+| Char | Meaning              | Velocity |
+|------|----------------------|----------|
+| `x`  | Normal hit           | 90       |
+| `o`  | Open hit (HH → open) | 90       |
+| `a`  | Accent               | 110      |
+| `g`  | Ghost note           | 30       |
+| `f`  | Flam (grace note)    | 90       |
+| `-`  | Rest                 | —        |
+| `:`  | Rest (beat marker)   | —        |
 
 ### Subdivision
 
@@ -179,24 +183,37 @@ The number of characters per bar sets the grid resolution:
 
 `BPM 120` in the preamble sets tempo (default 120).
 
+`BEATS 5` sets beats per bar (default 4). A 20-step track with `BEATS 5` gives 4 steps per beat (16th notes in 5/4 time). Can also be set per-pattern inside a drums block to mix meters.
+
+`NONORM` disables automatic normalization (see below).
+
 ## Macros
 
 Macros are processed on load and written back to the file (consumed). They help generate and normalize patterns.
+
+### Auto-formatting on save
+
+`[fix]` and `[norm]` run automatically on every save (after all other macros):
+
+1. **fix** — Pads tracks to the next length divisible by beats
+2. **norm** — Pads tracks to equal length, removes evenly-spaced empty columns, sorts by MIDI note descending, marks beat positions with `:`
+
+Add `NONORM` to the preamble to disable both.
 
 ### Block-level macros (standalone lines inside a drums block)
 
 | Macro        | Description |
 |--------------|-------------|
-| `[norm]`     | Pad tracks to max length, remove evenly-spaced all-dash columns, sort by MIDI note descending |
+| `[norm]`     | Explicit norm (runs automatically unless `NONORM` is set) |
+| `[fix]`      | Explicit fix (runs automatically unless `NONORM` is set) |
+| `[dup]`      | Duplicate each track (doubles the bar length) |
 | `[zoom N]`   | Intercalate N dashes after each step. `oooo` → `o--o--o--o--` with `[zoom 2]` |
-
-`[norm]` can also appear outside any drums block, in which case it normalizes all patterns in the file.
 
 ### Inline macros (on a track line, replaces step data)
 
 | Macro              | Description |
 |--------------------|-------------|
-| `[pat o-]`         | Repeat pattern to fill max track length. `o-` → `o-o-o-o-...` |
+| `[pat x-]`         | Repeat pattern to fill max track length. `x-` → `x-x-x-x-...` |
 | `[rand N]`         | Random pattern with ~1/N hit probability per tick |
 | `[init N]`         | Insert N dashes (empty steps) |
 | `[linear SD BD]`   | Generate tracks where each tick has exactly one of the listed instruments |
@@ -214,6 +231,16 @@ Macros are processed on load and written back to the file (consumed). They help 
 
 File changes are auto-reloaded during playback.
 
+### Directory mode
+
+Pass a directory instead of a file to watch all `.md` files:
+
+```bash
+python drums.py patterns/
+```
+
+Plays the most recently saved pattern file. When you save a different file, it auto-switches. Works well with VS Code — edit and save pattern files and the player follows.
+
 ## Instruments
 
 | Abbrev     | Sound           |
@@ -222,8 +249,7 @@ File changes are auto-reloaded during playback.
 | SD         | Snare           |
 | RS         | Rimshot         |
 | CL         | Clap            |
-| HH / CH   | Closed Hi-Hat   |
-| OH         | Open Hi-Hat     |
+| HH / CH   | Hi-Hat          |
 | PH         | Pedal Hi-Hat    |
 | CR         | Crash Cymbal    |
 | C2         | Crash 2         |

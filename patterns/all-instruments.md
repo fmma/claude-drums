@@ -4,126 +4,108 @@ BPM 200
 Together CR C2 SP RD RB HH OH PH TM CB SD RS CL T1 T2 T3 BD
 
 ```drums
-
 Together
 
-o C2
-o CB
-o SP
-o TM
-o RB
-o RD
-o CR
-o T1
-o OH
-o T2
-o PH
-o HH
-o T3
-o CL
-o SD
-o RS
-o BD
+x::: C2
+x::: CB
+x::: SP
+x::: TM
+x::: RB
+x::: RD
+x::: CR
+x::: T1
+x::: T2
+x::: PH
+o::: HH
+x::: HH
+x::: T3
+x::: CL
+x::: SD
+x::: RS
+x::: BD
 ```
 
 ```drums
-
 CR
-o CR
+x::: CR
 ```
 
 ```drums
-
 C2
-o C2
+x::: C2
 ```
 
 ```drums
-
 SP
-o SP
+x::: SP
 ```
 
 ```drums
-
 RD
-o RD
+x::: RD
 ```
 
 ```drums
-
 RB
-o RB
+x::: RB
 ```
 
 ```drums
-
 HH
-o HH
+x::: HH
 ```
 
 ```drums
-
 OH
-o OH
+o::: HH
 ```
 
 ```drums
-
 PH
-o PH
+x::: PH
 ```
 
 ```drums
-
 TM
-o TM
+x::: TM
 ```
 
 ```drums
-
 CB
-o CB
+x::: CB
 ```
 
 ```drums
-
 SD
-o SD
+x::: SD
 ```
 
 ```drums
-
 RS
-o RS
+x::: RS
 ```
 
 ```drums
-
 CL
-o CL
+x::: CL
 ```
 
 ```drums
-
 T1
-o T1
+x::: T1
 ```
 
 ```drums
-
 T2
-o T2
+x::: T2
 ```
 
 ```drums
-
 T3
-o T3
+x::: T3
 ```
 
 ```drums
-
 BD
-o BD
+x::: BD
 ```

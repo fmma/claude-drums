@@ -1,7 +1,7 @@
 # Basic Rock
 
 ```drums
-xxxxxxxx HH
---o---o- SD
-o---oo-- BD
+xoxoxoxo HH
+:-x-:-x- SD
+x-:-xx:- BD
 ```

@@ -1,7 +1,7 @@
 # All Instruments
 
 BPM 200
-Together CR C2 SP RD RB HH OH PH TM CB SD RS CL T1 T2 T3 BD
+Together C1 C2 SP RD Bell HH OH PH TM CB SD Rimshot Click T1 T2 T3 BD
 
 ```drums
 Together
@@ -10,24 +10,24 @@ x::: C2
 x::: CB
 x::: SP
 x::: TM
-x::: RB
+b::: RD
 x::: RD
-x::: CR
+x::: C1
 x::: T1
 x::: T2
 x::: PH
 o::: HH
 x::: HH
 x::: T3
-x::: CL
+s::: SD
+r::: SD
 x::: SD
-x::: RS
 x::: BD
 ```
 
 ```drums
-CR
-x::: CR
+C1
+x::: C1
 ```
 
 ```drums
@@ -46,8 +46,8 @@ x::: RD
 ```
 
 ```drums
-RB
-x::: RB
+Bell
+b::: RD
 ```
 
 ```drums
@@ -81,13 +81,13 @@ x::: SD
 ```
 
 ```drums
-RS
-x::: RS
+Rimshot
+r::: SD
 ```
 
 ```drums
-CL
-x::: CL
+Click
+s::: SD
 ```
 
 ```drums

@@ -2,6 +2,6 @@
 
 ```drums
 xxxxxxxx HH
---x---x- SD
+:-x-:-x- SD
 x-x-x-x- BD
 ```

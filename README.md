@@ -165,6 +165,9 @@ If no arrangement is given, patterns play in file order. If no BPM is given, def
 |------|----------------------|----------|
 | `x`  | Normal hit           | 90       |
 | `o`  | Open hit (HH → open) | 90       |
+| `r`  | Rimshot (SD → rimshot)| 90       |
+| `s`  | Sidestick (SD only)   | 90       |
+| `b`  | Bell (RD → ride bell) | 90       |
 | `a`  | Accent               | 110      |
 | `g`  | Ghost note           | 30       |
 | `f`  | Flam (grace note)    | 90       |
@@ -246,15 +249,12 @@ Plays the most recently saved pattern file. When you save a different file, it a
 | Abbrev     | Sound           |
 |------------|-----------------|
 | BD / KD    | Bass Drum       |
-| SD         | Snare           |
-| RS         | Rimshot         |
-| CL         | Clap            |
+| SD         | Snare (`r` rimshot, `s` sidestick) |
 | HH / CH   | Hi-Hat          |
 | PH         | Pedal Hi-Hat    |
-| CR         | Crash Cymbal    |
+| C1 / CR    | Crash 1         |
 | C2         | Crash 2         |
-| RD         | Ride Cymbal     |
-| RB         | Ride Bell       |
+| RD         | Ride (`b` for bell) |
 | HT / T1   | High Tom        |
 | MT / T2   | Mid Tom         |
 | LT / FT / T3 | Low/Floor Tom |

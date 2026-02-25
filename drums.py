@@ -19,17 +19,14 @@ SR = 44100
 # Instrument abbreviation -> MIDI note number (used as sample key)
 GM_DRUMS = {
     "BD": 36, "KD": 36,
-    "RS": 37,
     "SD": 38,
-    "CL": 39,
     "LT": 41, "FT": 41, "T3": 41,
     "HH": 42, "CH": 42,
     "PH": 44,
     "MT": 45, "T2": 45,
     "HT": 48, "T1": 48,
-    "CR": 49,
+    "C1": 49, "CR": 49,
     "RD": 51,
-    "RB": 53,
     "TM": 54,
     "SP": 55,
     "CB": 56,
@@ -309,8 +306,11 @@ def load_kit(dir_path):
     abbrev_to_note = {}
     for abbr, note in GM_DRUMS.items():
         abbrev_to_note[abbr] = note
-    # OH.wav still loads into note 46 (open hi-hat) even though OH is not a track instrument
+    # These are not track instruments but their WAV files should still load
     abbrev_to_note["OH"] = 46
+    abbrev_to_note["RS"] = 37
+    abbrev_to_note["CL"] = 39
+    abbrev_to_note["RB"] = 53
 
     for fname in os.listdir(dir_path):
         if not fname.lower().endswith(".wav"):
@@ -383,7 +383,7 @@ def load_kit(dir_path):
 # ---------------------------------------------------------------------------
 
 def get_velocity(char):
-    if char in ("x", "o", "f"):
+    if char in ("x", "o", "f", "r", "s", "b"):
         return 90
     if char == "a":
         return 110
@@ -404,7 +404,7 @@ def parse_pattern_block(text):
         if not stripped:
             continue
 
-        m = re.match(r"^([xoagf:\-]+)\s+([A-Za-z]\w{1,2})\s*$", stripped)
+        m = re.match(r"^([xorasbgf:\-]+)\s+([A-Za-z]\w{1,2})\s*$", stripped)
         if m:
             instrument = m.group(2).upper()
             steps_per_bar = max(steps_per_bar or 0, len(m.group(1)))
@@ -467,8 +467,8 @@ def process_block_macros(block_text, default_beats=None):
     lines = block_text.split("\n")
 
     # Regex patterns for each macro and for track lines
-    TRACK_RE = re.compile(r'^([xoagf:\-]+)\s+([A-Za-z]\w{1,2})\s*$')
-    PAT_RE = re.compile(r'\[pat\s+([xoagf:\-]+)\]', re.IGNORECASE)
+    TRACK_RE = re.compile(r'^([xorasbgf:\-]+)\s+([A-Za-z]\w{1,2})\s*$')
+    PAT_RE = re.compile(r'\[pat\s+([xorasbgf:\-]+)\]', re.IGNORECASE)
     RAND_RE = re.compile(r'\[rand\s+(\d+)\]', re.IGNORECASE)
     LINEAR_RE = re.compile(r'^\[linear\s+((?:[A-Za-z]\w{1,2}\s+)*[A-Za-z]\w{1,2})\]\s*$', re.IGNORECASE)
     INIT_RE = re.compile(r'\[init\s+(\d+)\]', re.IGNORECASE)
@@ -615,14 +615,13 @@ def process_block_macros(block_text, default_beats=None):
     return ('\n'.join(result), True)
 
 
-def _normalize_tracks(tracks, beats=4):
-    """Pad tracks to equal length, remove common empty grid positions, sort by pitch.
+def _normalize_tracks(tracks, beats=4, shrink=True):
+    """Pad tracks to equal length, optionally shrink, sort by pitch, mark beats.
 
-    This is the NORM post-processing step. It finds the smallest factor p such
+    When shrink=True (explicit [norm]), finds the smallest factor p such
     that all non-zero positions in every track fall on multiples of p, then keeps
-    only those positions (shrinking the grid). Repeats until no further shrinking
-    is possible. Rest characters are then set to ':' on beat positions and '-'
-    elsewhere.
+    only those positions (shrinking the grid). When shrink=False (auto-norm),
+    only pads, sorts, and marks beat positions.
     """
     # Pad all tracks to the same length
     max_len = max(len(steps) for steps, _ in tracks)
@@ -633,7 +632,7 @@ def _normalize_tracks(tracks, beats=4):
     min_len = max(beats, 1)
     n = len(tracks[0][0])
     p = 2
-    while p <= n and n // p >= min_len:
+    while shrink and p <= n and n // p >= min_len:
         if n % p == 0:
             # Check if all hits land on positions divisible by p
             can_shrink = all(
@@ -672,7 +671,7 @@ def _normalize_tracks(tracks, beats=4):
 
 def _norm_block(body, default_beats=None):
     """Apply [norm] to a drums block body. Returns (new_body, changed)."""
-    TRACK_RE = re.compile(r'^([xoagf:\-]+)\s+([A-Za-z]\w{1,2})\s*$')
+    TRACK_RE = re.compile(r'^([xorasbgf:\-]+)\s+([A-Za-z]\w{1,2})\s*$')
     BEATS_RE = re.compile(r'BEATS\s+(\d+)', re.IGNORECASE)
 
     beats = default_beats or 4
@@ -699,7 +698,7 @@ def _norm_block(body, default_beats=None):
         max_len += beats - (max_len % beats)
     tracks = [(steps.ljust(max_len, '-'), inst) for steps, inst in tracks]
 
-    tracks, warning = _normalize_tracks(tracks, beats=beats)
+    tracks, warning = _normalize_tracks(tracks, beats=beats, shrink=False)
 
     first_pos = track_entries[0][0]
     for j in range(len(track_entries) - 1, -1, -1):
@@ -852,7 +851,13 @@ def mix_patterns(patterns, samples, loop=False):
                 continue
 
             for ev_idx, (i, char, vel) in enumerate(events):
-                if char == "g" and (note, "ghost") in samples:
+                if char == "r" and note == 38 and 37 in samples:
+                    smp = samples[37]
+                elif char == "s" and note == 38 and 39 in samples:
+                    smp = samples[39]
+                elif char == "b" and note == 51 and 53 in samples:
+                    smp = samples[53]
+                elif char == "g" and (note, "ghost") in samples:
                     smp = samples[(note, "ghost")]
                 elif char == "a" and (note, "accent") in samples:
                     smp = samples[(note, "accent")]

@@ -47,7 +47,7 @@ Everything is in `drums.py`. The pipeline flows top-to-bottom:
 
 - `SR = 44100` — sample rate used everywhere
 - `GM_DRUMS` — maps instrument abbreviations (BD, SD, HH, etc.) to MIDI note numbers
-- Step chars: `x` = normal (vel 90), `o` = open hit (vel 90, HH → open hi-hat), `a` = accent (vel 110), `g` = ghost (vel 30), `f` = flam (vel 90), `-` = rest, `:` = rest (beat marker)
+- Step chars: `x` = normal (vel 90), `o` = open hit (vel 90, HH → open hi-hat), `r` = rimshot (vel 90, SD → rimshot), `s` = sidestick (vel 90, SD only), `b` = bell (vel 90, RD → ride bell), `a` = accent (vel 110), `g` = ghost (vel 30), `f` = flam (vel 90), `-` = rest, `:` = rest (beat marker)
 
 ## Pattern File Format
 

@@ -1,6 +1,6 @@
 # Bossa Nova
 ```drums
-x-x-x-x-x-x-x-x- HH
-r--r:-r-:-r-r--- SD
-x---:-x-:-x-:--- BD
+x-x-x-x-x-x-x-x- hh
+r--r|-r-|-r-r--- sd
+x---|-x-|-x-|--- bd
 ```

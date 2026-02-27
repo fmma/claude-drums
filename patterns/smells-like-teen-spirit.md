@@ -6,24 +6,20 @@ Intro Chorus Chorus Chorus Chorus End
 
 ```drums
 Intro
-
-:-x-:-x-:-x-:--- HH
-f---f---f---f--- SD
-:x-x:x-x:x-x:-x- BD
-
+|-x-|-x-|-x-|--- hh
+f---f---f---f--- sd
+|x-x|x-x|x-x|-x- bd
 ```
 
 ```drums
 Chorus
-
-x---:---:---:--- C1
-x---x---x---x--- HH
-:---x--x:x--x--- SD
-x--x:---x-xx:-x- BD
+x---|---|---|--- c1
+x---x---x---x--- hh
+|---x--x|x--x--- sd
+x--x|---x-xx|-x- bd
 ```
 
 ```drums
 End
-
-x::: C1
+x--- c1
 ```

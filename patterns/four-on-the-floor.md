@@ -1,7 +1,7 @@
 # Four on the Floor
 
 ```drums
-xxxxxxxx HH
-:-x-:-x- SD
-x-x-x-x- BD
+xxxxxxxx hh
+|-x-|-x- sd
+x-x-x-x- bd
 ```

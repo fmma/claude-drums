@@ -1,7 +1,7 @@
 # Shuffle
 
 ```drums
-x-xx-xx-xx-x HH
-:--x--:--x-- SD
-x--:--x--:-- BD
+x-xx-xx-xx-x hh
+|--x--|--x-- sd
+x--|--x--|-- bd
 ```

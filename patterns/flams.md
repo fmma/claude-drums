@@ -5,17 +5,16 @@ BPM 100
 Groove Groove Fill
 
 ```drums
-
 Groove
-xxxxxxxx HH
-:-f-:-f- SD
-x-:-x-:- BD
+xxxxxxxx hh
+|-f-|-f- sd
+x-|-x-|- bd
 ```
 
 ```drums
 Fill
-xxxxxxxx----xxxxxxxx---- HH
-:f-ffffff---:f-ffffff--- SD
-x---x-:-----x---x-:----- BD
+xxxxxxxx----xxxxxxxx---- hh
+|f-ffffff---|f-ffffff--- sd
+x---x-|-----x---x-|----- bd
 ```
 

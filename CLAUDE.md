@@ -47,7 +47,7 @@ Everything is in `drums.py`. The pipeline flows top-to-bottom:
 
 - `SR = 44100` — sample rate used everywhere
 - `GM_DRUMS` — maps instrument abbreviations (BD, SD, HH, etc.) to MIDI note numbers
-- Step chars: `x` = normal (vel 90), `o` = open hit (vel 90, HH → open hi-hat), `r` = rimshot (vel 90, SD → rimshot), `s` = sidestick (vel 90, SD only), `b` = bell (vel 90, RD → ride bell), `a` = accent (vel 110), `g` = ghost (vel 30), `f` = flam (vel 90), `-` = rest, `:` = rest (beat marker)
+- Step chars: `x` = normal (vel 90), `o` = open hit (vel 90, HH → open hi-hat), `r` = rimshot (vel 90, SD → rimshot), `s` = sidestick (vel 90, SD only), `b` = bell (vel 90, RD → ride bell), `a` = accent (vel 110), `g` = ghost (vel 30), `f` = flam (vel 90), `^` = inherit from base pattern, `-` = rest, `|` = rest (beat marker)
 
 ## Pattern File Format
 
@@ -65,6 +65,22 @@ x-------x-x----- BD
 ```
 
 Preamble has title, BPM, BEATS (default 4), arrangement lines. Drums blocks have a name line then `steps INSTRUMENT` lines. Track length sets grid resolution (16 = 16th notes, 12 = triplets, 8 = 8th notes).
+
+### Multi-pattern blocks
+
+A single drums block can contain multiple patterns separated by name lines. The first pattern is the "base"; subsequent patterns can use `^` to inherit notes from the base at the same instrument and proportional position. This avoids repeating the entire pattern for small variations like fills.
+
+```
+Verse
+x-x-x-x-x-x-x-x- HH
+|---x-------|---x--- SD
+x-------|---x-x----- BD
+
+VerseFill
+^^^^^^^^^^^^^^^^^ HH
+^^^^a^^^^^^^a^^^ SD
+^^x^^^^^^^^^^^^^ BD
+```
 
 ## WAV Kit Structure
 

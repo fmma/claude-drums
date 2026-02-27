@@ -392,34 +392,126 @@ def get_velocity(char):
     return 0
 
 
+def resolve_carets(variant_steps, base_steps):
+    """Replace '^' chars in variant_steps with corresponding base_steps chars.
+
+    When the variant is shorter than the base, each variant position maps to
+    a slice of the base. A '^' copies the entire slice; a non-'^' char is
+    zoomed with intercalated dashes. The result is always base-length.
+
+    When the variant is longer, the base is zoomed similarly before resolving.
+    """
+    vlen, blen = len(variant_steps), len(base_steps)
+    if vlen == blen:
+        return ''.join(base_steps[j] if ch == '^' else ch
+                       for j, ch in enumerate(variant_steps))
+    if vlen < blen and blen % vlen == 0:
+        factor = blen // vlen
+        result = []
+        for j, ch in enumerate(variant_steps):
+            if ch == '^':
+                result.append(base_steps[j * factor:(j + 1) * factor])
+            else:
+                result.append(ch + '-' * (factor - 1))
+        return ''.join(result)
+    if vlen > blen and vlen % blen == 0:
+        factor = vlen // blen
+        base_steps = ''.join(ch + '-' * (factor - 1) for ch in base_steps)
+        return ''.join(base_steps[j] if ch == '^' else ch
+                       for j, ch in enumerate(variant_steps))
+    # Fallback: proportional mapping
+    return ''.join(base_steps[j * blen // vlen] if ch == '^' else ch
+                   for j, ch in enumerate(variant_steps))
+
+
 def parse_pattern_block(text):
+    """Parse a drums block, returning a list of pattern dicts.
+
+    A block may contain multiple sub-patterns separated by name lines.
+    The first is the base; subsequent ones can use '^' to inherit from base.
+    """
+    TRACK_RE = re.compile(r"^([xorasbgf|\-^]+)\s+([A-Za-z]\w{1,2})\s*$")
+    BEATS_RE = re.compile(r"BEATS\s+(\d+)", re.IGNORECASE)
+    NAME_RE = re.compile(r'^[A-Za-z]\w*$')
+
     lines = text.strip().split("\n")
-    name = ""
-    tracks = []
-    steps_per_bar = None
-    beats = None
+
+    # Split lines into sub-pattern groups by detecting name lines
+    groups = []  # list of (name, tracks_lines, beats)
+    current_name = ""
+    current_tracks = []
+    current_beats = None
+    has_name = False
 
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
 
-        m = re.match(r"^([xorasbgf:\-]+)\s+([A-Za-z]\w{1,2})\s*$", stripped)
+        m = BEATS_RE.match(stripped)
         if m:
-            instrument = m.group(2).upper()
-            steps_per_bar = max(steps_per_bar or 0, len(m.group(1)))
-            tracks.append({"instrument": instrument, "steps": m.group(1)})
+            current_beats = int(m.group(1))
             continue
 
-        m = re.match(r"BEATS\s+(\d+)", stripped, re.IGNORECASE)
+        m = TRACK_RE.match(stripped)
         if m:
-            beats = int(m.group(1))
+            current_tracks.append((m.group(1), m.group(2).upper()))
             continue
 
-        if not name and re.match(r'^[A-Za-z]\w*$', stripped):
-            name = stripped
+        if NAME_RE.match(stripped):
+            if has_name or current_tracks:
+                # Start a new sub-pattern; save the current one
+                groups.append((current_name, current_tracks, current_beats))
+                current_tracks = []
+                current_beats = None
+            current_name = stripped
+            has_name = True
 
-    return {"name": name, "tracks": tracks, "steps_per_bar": steps_per_bar or 16, "beats": beats}
+    # Save the last group
+    if has_name or current_tracks:
+        groups.append((current_name, current_tracks, current_beats))
+
+    if not groups:
+        return [{"name": "", "tracks": [], "steps_per_bar": 16, "beats": None}]
+
+    # Parse the base pattern (first group)
+    base_name, base_track_data, base_beats = groups[0]
+    base_tracks = [{"instrument": inst, "steps": steps} for steps, inst in base_track_data]
+    base_steps_per_bar = max((len(s) for s, _ in base_track_data), default=16)
+    base_inst_steps = {inst: steps for steps, inst in base_track_data}
+
+    results = [{"name": base_name, "tracks": base_tracks, "steps_per_bar": base_steps_per_bar, "beats": base_beats}]
+
+    # Parse variant patterns
+    for var_name, var_track_data, var_beats in groups[1:]:
+        var_tracks = []
+        var_steps_per_bar = 0
+        var_instruments = set()
+        for steps, inst in var_track_data:
+            var_instruments.add(inst)
+            if '^' in steps and inst in base_inst_steps:
+                steps = resolve_carets(steps, base_inst_steps[inst])
+            elif '^' in steps:
+                steps = steps.replace('^', '-')
+            # Zoom short variant tracks to match base resolution
+            if len(steps) < base_steps_per_bar and base_steps_per_bar % len(steps) == 0:
+                factor = base_steps_per_bar // len(steps)
+                steps = ''.join(ch + '-' * (factor - 1) for ch in steps)
+            var_tracks.append({"instrument": inst, "steps": steps})
+            var_steps_per_bar = max(var_steps_per_bar, len(steps))
+        # Inherit missing instruments from base
+        for base_steps, base_inst in base_track_data:
+            if base_inst not in var_instruments:
+                var_tracks.append({"instrument": base_inst, "steps": base_steps})
+                var_steps_per_bar = max(var_steps_per_bar, len(base_steps))
+        results.append({
+            "name": var_name,
+            "tracks": var_tracks,
+            "steps_per_bar": var_steps_per_bar or base_steps_per_bar,
+            "beats": var_beats or base_beats,
+        })
+
+    return results
 
 
 def parse_preamble(text):
@@ -462,13 +554,13 @@ def process_block_macros(block_text, default_beats=None):
       [zoom N]     - Stretch all tracks by inserting N dashes after each step
       [dup]        - Duplicate each track (double the bar length)
       [fix]        - Pad tracks to next length divisible by beats
-      [norm]       - Normalize: shrink to shortest grid, sort by pitch, mark beats with ':'
+      [norm]       - Normalize: shrink to shortest grid, sort by pitch, mark beats with '|'
     """
     lines = block_text.split("\n")
 
     # Regex patterns for each macro and for track lines
-    TRACK_RE = re.compile(r'^([xorasbgf:\-]+)\s+([A-Za-z]\w{1,2})\s*$')
-    PAT_RE = re.compile(r'\[pat\s+([xorasbgf:\-]+)\]', re.IGNORECASE)
+    TRACK_RE = re.compile(r'^([xorasbgf|\-^]+)\s+([A-Za-z]\w{1,2})\s*$')
+    PAT_RE = re.compile(r'\[pat\s+([xorasbgf|\-]+)\]', re.IGNORECASE)
     RAND_RE = re.compile(r'\[rand\s+(\d+)\]', re.IGNORECASE)
     LINEAR_RE = re.compile(r'^\[linear\s+((?:[A-Za-z]\w{1,2}\s+)*[A-Za-z]\w{1,2})\]\s*$', re.IGNORECASE)
     INIT_RE = re.compile(r'\[init\s+(\d+)\]', re.IGNORECASE)
@@ -486,6 +578,7 @@ def process_block_macros(block_text, default_beats=None):
     has_dup = False
     has_macro = False
     block_beats = default_beats or 4
+    block_beats_line = None
 
     for line in lines:
         stripped = line.strip()
@@ -509,6 +602,7 @@ def process_block_macros(block_text, default_beats=None):
         bm = BEATS_RE.match(stripped)
         if bm:
             block_beats = int(bm.group(1))
+            block_beats_line = stripped
 
     if not has_macro:
         return (block_text, False)
@@ -567,15 +661,49 @@ def process_block_macros(block_text, default_beats=None):
         result.append(line)
 
     # --- Post-processing: DUP, FIX, ZOOM and NORM transform entire tracks ---
+    # Split into sub-pattern groups so each is transformed independently.
     if zoom_factor is not None or has_norm or has_fix or has_dup:
-        # Collect track lines with their positions in the result
-        track_entries = []
+        NAME_RE = re.compile(r'^[A-Za-z]\w*$')
+
+        # Collect track entries and split into groups by name lines
+        all_entries = []
         for i, line in enumerate(result):
             tm = TRACK_RE.match(line.strip())
             if tm:
-                track_entries.append((i, tm.group(1), tm.group(2)))
+                all_entries.append((i, tm.group(1), tm.group(2)))
 
-        if track_entries:
+        groups = []
+        current_group = []
+        for entry in all_entries:
+            idx = entry[0]
+            # Check if there's a name line between previous entry and this one
+            if current_group:
+                prev_idx = current_group[-1][0]
+                for k in range(prev_idx + 1, idx):
+                    if NAME_RE.match(result[k].strip()):
+                        groups.append(current_group)
+                        current_group = []
+                        break
+            current_group.append(entry)
+        if current_group:
+            groups.append(current_group)
+
+        # Collect name lines for each group (look back from first track)
+        group_names = []
+        for group in groups:
+            first_idx = group[0][0]
+            name = None
+            for k in range(first_idx - 1, -1, -1):
+                s = result[k].strip()
+                if not s:
+                    continue
+                if NAME_RE.match(s):
+                    name = s
+                break
+            group_names.append(name)
+
+        # Process each group independently (in reverse to preserve indices)
+        for track_entries in reversed(groups):
             tracks = [(steps, inst) for _, steps, inst in track_entries]
 
             # DUP: double each track by concatenating with itself
@@ -605,12 +733,46 @@ def process_block_macros(block_text, default_beats=None):
                 for j in range(len(track_entries) - 1, -1, -1):
                     del result[track_entries[j][0]]
                 for j, (steps, inst) in enumerate(tracks):
-                    result.insert(first_pos + j, f"{steps} {inst}")
+                    result.insert(first_pos + j, f"{steps} {inst.lower()}")
                 if warning:
                     result.insert(first_pos, warning)
             else:
                 for j, (idx, _, _) in enumerate(track_entries):
                     result[idx] = f"{tracks[j][0]} {tracks[j][1]}"
+
+        # When NORM is active, rebuild with canonical layout:
+        # Name\ntracks[\n\nName\ntracks]*
+        if has_norm:
+            # Re-parse the transformed result to collect groups with names
+            norm_groups = []  # (name, [(steps, inst)])
+            cur_name = None
+            cur_tracks = []
+            for line in result:
+                s = line.strip()
+                if not s:
+                    continue
+                tm = TRACK_RE.match(s)
+                if tm:
+                    cur_tracks.append((tm.group(1), tm.group(2)))
+                elif NAME_RE.match(s):
+                    if cur_tracks:
+                        norm_groups.append((cur_name, cur_tracks))
+                        cur_tracks = []
+                    cur_name = s
+            if cur_tracks:
+                norm_groups.append((cur_name, cur_tracks))
+
+            out = []
+            if block_beats_line:
+                out.append(block_beats_line)
+            for gi, (name, trks) in enumerate(norm_groups):
+                if gi > 0:
+                    out.append('')
+                if name:
+                    out.append(name)
+                for steps, inst in trks:
+                    out.append(f"{steps} {inst.lower()}")
+            result = out
 
     return ('\n'.join(result), True)
 
@@ -634,9 +796,21 @@ def _normalize_tracks(tracks, beats=4, shrink=True):
     p = 2
     while shrink and p <= n and n // p >= min_len:
         if n % p == 0:
-            # Check if all hits land on positions divisible by p
+            # Check if all off-grid positions are droppable.
+            # A '^' is droppable only if its on-grid neighbor is also '^'
+            # (the whole group inherits from base, so dropping is safe).
+            # A '-'/'|' is droppable only if its on-grid neighbor is not '^'
+            # (explicit rest next to a caret overrides the base).
+            def _droppable(steps, i):
+                ch = steps[i]
+                on_grid = steps[i - i % p]
+                if ch == '^':
+                    return on_grid == '^'
+                if ch in ('-', '|'):
+                    return on_grid != '^'
+                return False
             can_shrink = all(
-                steps[i] in ('-', ':')
+                _droppable(steps, i)
                 for steps, _ in tracks
                 for i in range(n) if i % p != 0
             )
@@ -650,14 +824,16 @@ def _normalize_tracks(tracks, beats=4, shrink=True):
         else:
             p += 1
 
-    # Replace rest characters: ':' on beat positions, '-' elsewhere
+    # Replace rest characters: '|' on beat positions, '-' elsewhere
+    # Skip '|' when beat_step==1 (consecutive beats with nothing between them)
+    # to avoid sequences like 'x|||'.
     n = len(tracks[0][0])
     if beats > 0 and n % beats == 0:
         beat_step = n // beats
         def rest_char(i):
-            return ':' if i % beat_step == 0 else '-'
+            return '|' if i % beat_step == 0 and beat_step > 1 else '-'
         tracks = [
-            (''.join(rest_char(i) if ch in ('-', ':') else ch for i, ch in enumerate(steps)), inst)
+            (''.join(rest_char(i) if ch in ('-', '|') else ch for i, ch in enumerate(steps)), inst)
             for steps, inst in tracks
         ]
     elif beats > 0:
@@ -670,45 +846,75 @@ def _normalize_tracks(tracks, beats=4, shrink=True):
 
 
 def _norm_block(body, default_beats=None):
-    """Apply [norm] to a drums block body. Returns (new_body, changed)."""
-    TRACK_RE = re.compile(r'^([xorasbgf:\-]+)\s+([A-Za-z]\w{1,2})\s*$')
+    """Apply [norm] to a drums block body. Returns (new_body, changed).
+
+    For multi-pattern blocks (multiple name lines), each sub-pattern is
+    normalized independently. Also normalizes layout: title immediately
+    followed by tracks, blank line between sub-patterns, no trailing blanks.
+    """
+    TRACK_RE = re.compile(r'^([xorasbgf|\-^]+)\s+([A-Za-z]\w{1,2})\s*$')
     BEATS_RE = re.compile(r'BEATS\s+(\d+)', re.IGNORECASE)
+    NAME_RE = re.compile(r'^[A-Za-z]\w*$')
 
     beats = default_beats or 4
+    beats_line = None
     lines = [l for l in body.split("\n") if not l.strip().startswith("# WARNING:")]
     for line in lines:
         bm = BEATS_RE.match(line.strip())
         if bm:
             beats = int(bm.group(1))
+            beats_line = line.strip()
 
-    track_entries = []
-    for i, line in enumerate(lines):
-        tm = TRACK_RE.match(line.strip())
+    # Parse into sub-pattern groups: (name, [(steps, inst)], beats)
+    groups = []
+    current_name = None
+    current_track_entries = []
+    current_beats = beats
+    for line in lines:
+        stripped = line.strip()
+        bm = BEATS_RE.match(stripped)
+        if bm:
+            current_beats = int(bm.group(1))
+        tm = TRACK_RE.match(stripped)
         if tm:
-            track_entries.append((i, tm.group(1), tm.group(2)))
+            current_track_entries.append((tm.group(1), tm.group(2)))
+            continue
+        if NAME_RE.match(stripped):
+            if current_track_entries:
+                groups.append((current_name, current_track_entries, current_beats))
+                current_track_entries = []
+            current_name = stripped
+    if current_track_entries:
+        groups.append((current_name, current_track_entries, current_beats))
 
-    if not track_entries:
+    if not groups:
         return body, False
 
-    tracks = [(steps, inst) for _, steps, inst in track_entries]
+    # Normalize each group and rebuild body
+    out_lines = []
+    if beats_line:
+        out_lines.append(beats_line)
+    for gi, (name, track_entries, group_beats) in enumerate(groups):
+        tracks = list(track_entries)
 
-    # Fix: pad tracks to next length divisible by beats
-    max_len = max(len(steps) for steps, _ in tracks)
-    if max_len % beats != 0:
-        max_len += beats - (max_len % beats)
-    tracks = [(steps.ljust(max_len, '-'), inst) for steps, inst in tracks]
+        # Fix: pad tracks to next length divisible by beats
+        max_len = max(len(steps) for steps, _ in tracks)
+        if max_len % group_beats != 0:
+            max_len += group_beats - (max_len % group_beats)
+        tracks = [(steps.ljust(max_len, '-'), inst) for steps, inst in tracks]
 
-    tracks, warning = _normalize_tracks(tracks, beats=beats, shrink=False)
+        tracks, warning = _normalize_tracks(tracks, beats=group_beats, shrink=False)
 
-    first_pos = track_entries[0][0]
-    for j in range(len(track_entries) - 1, -1, -1):
-        del lines[track_entries[j][0]]
-    for j, (steps, inst) in enumerate(tracks):
-        lines.insert(first_pos + j, f"{steps} {inst}")
-    if warning:
-        lines.insert(first_pos, warning)
+        if gi > 0:
+            out_lines.append('')
+        if name:
+            out_lines.append(name)
+        if warning:
+            out_lines.append(warning)
+        for steps, inst in tracks:
+            out_lines.append(f"{steps} {inst.lower()}")
 
-    new_body = '\n'.join(lines)
+    new_body = '\n'.join(out_lines) + '\n'
     return new_body, new_body != body
 
 
@@ -772,7 +978,7 @@ def parse_file(text):
     blocks = re.findall(r"```drums\s*\n(.*?)```", text, re.DOTALL)
     bpm = global_bpm or 120
     beats = global_beats or 4
-    parsed = [parse_pattern_block(b) for b in blocks]
+    parsed = [p for b in blocks for p in parse_pattern_block(b)]
 
     patterns = {}
     for i, p in enumerate(parsed):
@@ -1191,7 +1397,8 @@ Pattern format (in ```drums code blocks or plain text):
 Step characters:
   x     normal hit       a     accent (loud)
   o     open hit (HH)    g     ghost note
-  f     flam             -     rest
+  f     flam             ^     inherit from base
+  -     rest             |     rest (beat marker)
 """,
     )
     ap.add_argument("input", nargs="?", help="Input file or directory (dir mode: plays most recently saved .md)")
@@ -1200,6 +1407,7 @@ Step characters:
                     help="Load WAV samples from kit directory (default: kits/acoustic)")
     ap.add_argument("--synth", action="store_true", help="Use only synthesized sounds")
     ap.add_argument("-l", "--list", action="store_true", help="List available instruments")
+    ap.add_argument("-n", "--norm", action="store_true", help="Normalize (shrink) all blocks and exit")
     args = ap.parse_args()
 
     if args.list:
@@ -1208,6 +1416,25 @@ Step characters:
     if not args.input:
         ap.print_help()
         sys.exit(1)
+
+    if args.norm:
+        # Inject [norm] into every drums block, run macro expansion, then exit
+        if os.path.isdir(args.input):
+            files = [os.path.join(args.input, f)
+                     for f in os.listdir(args.input) if f.lower().endswith('.md')]
+        else:
+            files = [args.input]
+        for filepath in files:
+            with open(filepath) as f:
+                text = f.read()
+            text = re.sub(r'```drums\s*\n', lambda m: m.group(0) + '[norm]\n', text)
+            apply_macros(text, filepath)
+            # Clean up blank lines left by consumed [norm] tags
+            with open(filepath) as f:
+                cleaned = re.sub(r'(```drums\s*\n)\n+', r'\1', f.read())
+            with open(filepath, 'w') as f:
+                f.write(cleaned)
+        return
 
     # Discover available kits
     kits_dir = os.path.join(os.path.dirname(__file__), "kits")

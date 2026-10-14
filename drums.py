@@ -555,6 +555,10 @@ def process_block_macros(block_text, default_beats=None):
       [dup]        - Duplicate each track (double the bar length)
       [fix]        - Pad tracks to next length divisible by beats
       [norm]       - Normalize: shrink to shortest grid, sort by pitch, mark beats with '|'
+
+    Block macros on a standalone line apply to all patterns in the block.
+    Placed on a pattern name line (e.g. "Verse [zoom 1]"), they apply only
+    to that pattern. Scoped macros override block-wide ones for that group.
     """
     lines = block_text.split("\n")
 
@@ -572,13 +576,17 @@ def process_block_macros(block_text, default_beats=None):
     BEATS_RE = re.compile(r'BEATS\s+(\d+)', re.IGNORECASE)
 
     # --- First pass: detect which macros are present ---
-    zoom_factor = None
-    has_norm = False
-    has_fix = False
-    has_dup = False
+    # Block-wide macros (standalone lines) apply to all patterns.
+    # Macros on a pattern name line are scoped to that pattern only.
+    block_zoom = None
+    block_norm = False
+    block_fix = False
+    block_dup = False
     has_macro = False
+    scoped_macros = {}  # pattern_name -> {zoom, norm, fix, dup}
     block_beats = default_beats or 4
     block_beats_line = None
+    NAME_ONLY_RE = re.compile(r'^[A-Za-z]\w*$')
 
     for line in lines:
         stripped = line.strip()
@@ -586,19 +594,42 @@ def process_block_macros(block_text, default_beats=None):
             has_macro = True
         if LINEAR_RE.match(stripped):
             has_macro = True
+
         zm = ZOOM_RE.search(stripped)
-        if zm:
+        nm = NORM_RE.search(stripped)
+        fm = FIX_RE.search(stripped)
+        dm = DUP_RE.search(stripped)
+
+        if zm or nm or fm or dm:
             has_macro = True
-            zoom_factor = int(zm.group(1) or 1)
-        if NORM_RE.search(stripped):
-            has_macro = True
-            has_norm = True
-        if FIX_RE.search(stripped):
-            has_macro = True
-            has_fix = True
-        if DUP_RE.search(stripped):
-            has_macro = True
-            has_dup = True
+            # Strip all block macros to see if the remainder is a pattern name
+            remainder = ZOOM_RE.sub('', stripped)
+            remainder = NORM_RE.sub('', remainder)
+            remainder = FIX_RE.sub('', remainder)
+            remainder = DUP_RE.sub('', remainder).strip()
+
+            if remainder and NAME_ONLY_RE.match(remainder):
+                # Scoped to this pattern
+                entry = scoped_macros.setdefault(remainder, {})
+                if zm:
+                    entry['zoom'] = int(zm.group(1) or 1)
+                if nm:
+                    entry['norm'] = True
+                if fm:
+                    entry['fix'] = True
+                if dm:
+                    entry['dup'] = True
+            else:
+                # Block-wide
+                if zm:
+                    block_zoom = int(zm.group(1) or 1)
+                if nm:
+                    block_norm = True
+                if fm:
+                    block_fix = True
+                if dm:
+                    block_dup = True
+
         bm = BEATS_RE.match(stripped)
         if bm:
             block_beats = int(bm.group(1))
@@ -655,6 +686,7 @@ def process_block_macros(block_text, default_beats=None):
         line = NORM_RE.sub('', line)
         line = FIX_RE.sub('', line)
         line = DUP_RE.sub('', line)
+        line = line.rstrip()
         line = INIT_RE.sub(lambda m: '-' * int(m.group(1)), line)
         line = PAT_RE.sub(expand_pat, line)
         line = RAND_RE.sub(expand_rand, line)
@@ -662,7 +694,10 @@ def process_block_macros(block_text, default_beats=None):
 
     # --- Post-processing: DUP, FIX, ZOOM and NORM transform entire tracks ---
     # Split into sub-pattern groups so each is transformed independently.
-    if zoom_factor is not None or has_norm or has_fix or has_dup:
+    # Each group uses its own scoped macros (from its name line) with
+    # block-wide macros as fallback.
+    any_block_macro = block_zoom is not None or block_norm or block_fix or block_dup
+    if any_block_macro or scoped_macros:
         NAME_RE = re.compile(r'^[A-Za-z]\w*$')
 
         # Collect track entries and split into groups by name lines
@@ -703,31 +738,38 @@ def process_block_macros(block_text, default_beats=None):
             group_names.append(name)
 
         # Process each group independently (in reverse to preserve indices)
-        for track_entries in reversed(groups):
+        for group_name, track_entries in zip(reversed(group_names), reversed(groups)):
+            # Determine effective macros: scoped overrides block-wide
+            scoped = scoped_macros.get(group_name, {}) if group_name else {}
+            grp_zoom = scoped.get('zoom', block_zoom)
+            grp_norm = scoped.get('norm', block_norm)
+            grp_fix = scoped.get('fix', block_fix)
+            grp_dup = scoped.get('dup', block_dup)
+
             tracks = [(steps, inst) for _, steps, inst in track_entries]
 
             # DUP: double each track by concatenating with itself
-            if has_dup:
+            if grp_dup:
                 tracks = [(steps + steps, inst) for steps, inst in tracks]
 
             # FIX: pad tracks to next length divisible by beats
-            if has_fix:
+            if grp_fix:
                 max_len = max(len(steps) for steps, _ in tracks)
                 if max_len % block_beats != 0:
                     max_len += block_beats - (max_len % block_beats)
                 tracks = [(steps.ljust(max_len, '-'), inst) for steps, inst in tracks]
 
             # ZOOM: insert dashes after each step character
-            if zoom_factor is not None:
-                tracks = [(''.join(ch + '-' * zoom_factor for ch in steps), inst)
+            if grp_zoom is not None:
+                tracks = [(''.join(ch + '-' * grp_zoom for ch in steps), inst)
                           for steps, inst in tracks]
 
             # NORM: pad to equal length, shrink common empty positions, sort by pitch
-            if has_norm:
+            if grp_norm:
                 tracks, warning = _normalize_tracks(tracks, beats=block_beats)
 
             # Write transformed tracks back into result lines
-            if has_norm:
+            if grp_norm:
                 # NORM reorders tracks, so gather them at the first track position
                 first_pos = track_entries[0][0]
                 for j in range(len(track_entries) - 1, -1, -1):
@@ -742,7 +784,8 @@ def process_block_macros(block_text, default_beats=None):
 
         # When NORM is active, rebuild with canonical layout:
         # Name\ntracks[\n\nName\ntracks]*
-        if has_norm:
+        any_norm = block_norm or any(s.get('norm') for s in scoped_macros.values())
+        if any_norm:
             # Re-parse the transformed result to collect groups with names
             norm_groups = []  # (name, [(steps, inst)])
             cur_name = None

@@ -388,7 +388,7 @@ def get_velocity(char):
     if char == "a":
         return 110
     if char == "g":
-        return 30
+        return 50
     return 0
 
 
